@@ -35,9 +35,8 @@ Also, check out:
 │   ├── film_model_v1.py                # Early FiLM model (ReLU, no residuals)
 │   └── film_model_v2.py                # Final FiLM model (SIREN-style with sine + residuals)
 ├── dataset.py                          # Dataloading
-│   train.ipynb  # Training pipeline (PointNet + FiLM)
-│   test.ipynb # Evaluation
-├── requirements.txt
+│   train_model.ipynb  # Training pipeline (PointNet + FiLM)
+│   test_model.ipynb # Evaluation
 └── README.md
 ```
 
@@ -85,24 +84,16 @@ The dataset will be hosted on **Harvard Dataverse** (link pending).
 
 ## 🔧 How to Run
 
-### Installation
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
 ### Train the Model
 
 ```bash
-# Inside train.ipynb
+# Inside train_model.ipynb
 ```
 
 ### Evaluate
 
 ```bash
-# test.ipynb
+# test_model.ipynb
 
 ```
 
