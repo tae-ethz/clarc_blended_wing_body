@@ -9,7 +9,9 @@ The project introduces a public high-fidelity dataset for blended wing body (BWB
 
 The dataset is publicly available at: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VJT9EP
 
-Also, check out our paper on Arxiv: https://arxiv.org/abs/2509.07209
+Also, check out:
+- Our paper on Arxiv: https://arxiv.org/abs/2509.07209  
+- A short video overview on YouTube: https://www.youtube.com/watch?v=-SkEXb0ndD0&t=1s
 
 
 
