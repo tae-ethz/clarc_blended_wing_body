@@ -42,6 +42,7 @@ TRAIN_RATIO = float(os.getenv("FILM_TRAIN_RATIO", "0.9"))
 NUM_WORKERS = int(os.getenv("FILM_NUM_WORKERS", "0"))
 GRAD_CLIP = float(os.getenv("FILM_GRAD_CLIP", "0"))  # 0 = disabled
 DISABLE_AMP = int(os.getenv("FILM_DISABLE_AMP", "0")) == 1
+LR_END = float(os.getenv("FILM_LR_END", "0"))  # 0 = constant LR
 
 # ----------------------- Device & AMP -----------------------
 if torch.cuda.is_available():
@@ -122,12 +123,18 @@ start_epoch = 1
 best_val = float("inf")
 if RESUME_PATH.is_file():
     ckpt = torch.load(RESUME_PATH, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model"])
-    opt.load_state_dict(ckpt["optimizer"])
-    scaler.load_state_dict(ckpt["scaler"])
-    start_epoch = ckpt["epoch"] + 1
-    best_val = ckpt.get("best_val", float("inf"))
-    print(f"Resumed from {RESUME_PATH} (epoch {ckpt['epoch']}, best_val={best_val:.4e})")
+    if "model" in ckpt:  # new format
+        model.load_state_dict(ckpt["model"])
+        if "optimizer" in ckpt:
+            opt.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val = ckpt.get("best_val", float("inf"))
+    else:  # old format (model state_dict only)
+        model.load_state_dict(ckpt)
+        start_epoch = int(os.getenv("FILM_START_EPOCH", "1"))
+    print(f"Resumed from {RESUME_PATH} (starting epoch {start_epoch}, best_val={best_val:.4e})")
 
 # ----------------------- Train/Val Loop -----------------------
 LOSS_PLOT = CKPT_DIR / "loss_curves.png"
@@ -138,6 +145,13 @@ print(f"Train loader: {len(train_loader)} batches, Val loader: {len(val_loader)}
 import sys; sys.stdout.flush()
 
 for epoch in range(start_epoch, EPOCHS + 1):
+    # linear LR decay
+    if LR_END > 0:
+        frac = (epoch - 1) / max(EPOCHS - 1, 1)
+        cur_lr = LR + (LR_END - LR) * frac
+        for pg in opt.param_groups:
+            pg["lr"] = cur_lr
+
     model.train()
     running = 0.0
     count = 0
