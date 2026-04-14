@@ -196,14 +196,18 @@ for epoch in range(start_epoch, EPOCHS + 1):
         fig.savefig(LOSS_PLOT, dpi=150)
         plt.close(fig)
 
-    # Save best
-    saved = False
-    if val_mse < best_val:
-        best_val = val_mse
+    # Periodic checkpoint (every 500 epochs)
+    if epoch % 500 == 0:
+        ckpt_path = CKPT_DIR / f"film_ep{epoch:05d}.pth"
         torch.save(dict(
             epoch=epoch, model=model.state_dict(), optimizer=opt.state_dict(),
             scaler=scaler.state_dict(), best_val=best_val,
-        ), BEST_PATH)
+        ), ckpt_path)
+
+    # Track best val
+    saved = False
+    if val_mse < best_val:
+        best_val = val_mse
         saved = True
 
     if saved or epoch % 10 == 0 or epoch == 1:
