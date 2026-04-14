@@ -24,7 +24,8 @@ class UnifiedDesignDataset(Dataset):
                  norm_stats: dict | None = None,
                  mode: str = "train",
                  include_alt_kft: bool = False,
-                 include_beta_deg: bool = False):
+                 include_beta_deg: bool = False,
+                 preload: bool = False):
         super().__init__()
         self.mode = mode
 
@@ -185,9 +186,20 @@ class UnifiedDesignDataset(Dataset):
         self.coord_dim  = 6
         self.output_dim = 3
 
-    def _load_case(self, meta: dict) -> dict:
-        """Load point data from HDF5 on demand for a single case."""
-        k = meta['case_key']
+        # ----------------- optional: preload all data into RAM -----------------
+        self._cache = {}
+        if preload:
+            all_keys = {m['case_key'] for design in self.designs for m in design}
+            print(f"[preload] loading {len(all_keys)} cases into RAM ...")
+            for i, k in enumerate(sorted(all_keys)):
+                self._cache[k] = self._read_h5_case(k)
+                if (i + 1) % 1000 == 0:
+                    print(f"  [preload] {i+1}/{len(all_keys)}")
+            print(f"[preload] done — {len(self._cache)} cases cached")
+            self.h5f.close()
+
+    def _read_h5_case(self, k: str) -> tuple[np.ndarray, np.ndarray]:
+        """Read raw coords6 and normalized targets from HDF5 for one case."""
         P = self.points_grp[k][()]
         N = self.normals_grp[k][()] if k in self.normals_grp else np.zeros_like(P, dtype=np.float32)
         Pn = 2.0 * (P - self.coord_min) / (self.coord_max - self.coord_min + 1e-12) - 1.0
@@ -197,6 +209,18 @@ class UnifiedDesignDataset(Dataset):
         cfx = (self.cfx_grp[k][()] - self.output_mean[1]) / self.output_std[1]
         cfz = (self.cfz_grp[k][()] - self.output_mean[2]) / self.output_std[2]
         Y = np.stack([cp, cfx, cfz], axis=-1).astype(np.float32)
+
+        valid = np.isfinite(Y).all(axis=-1) & np.isfinite(coords6).all(axis=-1)
+        coords6, Y = coords6[valid], Y[valid]
+        return coords6, Y
+
+    def _load_case(self, meta: dict) -> dict:
+        """Load point data for a single case (from cache or HDF5)."""
+        k = meta['case_key']
+        if k in self._cache:
+            coords6, Y = self._cache[k]
+        else:
+            coords6, Y = self._read_h5_case(k)
 
         return dict(
             case_name=k, mesh=meta['mesh'], flight_cond=meta['flight_cond'],

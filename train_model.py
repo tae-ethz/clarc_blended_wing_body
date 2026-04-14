@@ -40,6 +40,8 @@ BATCH_SIZE = int(os.getenv("FILM_BATCH_SIZE", "64"))
 LR = float(os.getenv("FILM_LR", "5e-4"))
 TRAIN_RATIO = float(os.getenv("FILM_TRAIN_RATIO", "0.9"))
 NUM_WORKERS = int(os.getenv("FILM_NUM_WORKERS", "0"))
+GRAD_CLIP = float(os.getenv("FILM_GRAD_CLIP", "0"))  # 0 = disabled
+DISABLE_AMP = int(os.getenv("FILM_DISABLE_AMP", "0")) == 1
 
 # ----------------------- Device & AMP -----------------------
 if torch.cuda.is_available():
@@ -53,7 +55,7 @@ else:
     device_name = "CPU"
 print(f"Using device: {device_name}")
 
-use_amp = device.type == "cuda"
+use_amp = device.type == "cuda" and not DISABLE_AMP
 scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
 # ----------------------- Load norm stats -----------------------
@@ -68,7 +70,8 @@ else:
     tmp_ds.close()
 
 # ----------------------- Dataset & Loaders -----------------------
-ds_full = UnifiedDesignDataset(csv_path=CSV, hdf5_path=H5, norm_stats=NORM, mode="train")
+PRELOAD = int(os.getenv("FILM_PRELOAD", "0")) == 1
+ds_full = UnifiedDesignDataset(csv_path=CSV, hdf5_path=H5, norm_stats=NORM, mode="train", preload=PRELOAD)
 train_ds, val_ds = split_designs(ds_full, train_ratio=TRAIN_RATIO)
 
 train_loader = DataLoader(
@@ -139,6 +142,9 @@ for epoch in range(1, EPOCHS + 1):
             loss = torch.mean((pred - targets) ** 2)
 
         scaler.scale(loss).backward()
+        if GRAD_CLIP > 0:
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         scaler.step(opt)
         scaler.update()
 
