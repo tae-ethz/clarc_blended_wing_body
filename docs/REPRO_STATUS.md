@@ -138,20 +138,66 @@ All preprocessing is complete. The data pipeline is ready for training.
 
 ## What Should Be Done Next
 
-### Immediate next step: train the FiLM model
+### Immediate next step: train the FiLM model on Euler (RTX 4090)
 
-1. Build `norm_stats.json` from train data (auto-computed by `train_model.py` if missing).
-2. Run `train_model.py` with the original `film_model_v1` settings.
-3. Run `test_model.py` on the held-out test split.
-4. Compare:
-  - `MSE`
-  - `MAE`
-  - `RelL1`
-  - `RelL2`
-  for:
-  - `cp`
-  - `cf_x`
-  - `cf_z`
+Data has been rsync'd to `/cluster/scratch/taebersold/clarc_blended_wing_body/`.
+
+#### 1. Setup on Euler
+
+```bash
+cd /cluster/scratch/taebersold/clarc_blended_wing_body
+
+# Move data files into expected subdirs (rsync landed them flat)
+mkdir -p data csv_files
+mv surface_data.hdf5 surface_data_test.hdf5 data/
+mv case_with_geom_params_*.csv geom_params_*.csv csv_files/
+
+# norm_stats.json stays in repo root (already there)
+
+# Clone the repo if not already present, or git pull
+git pull origin main
+
+# Create venv and install deps
+python3 -m venv .venv
+.venv/bin/pip install torch torchvision h5py pandas numpy matplotlib
+```
+
+#### 2. Train
+
+```bash
+# Submit as a GPU job, or run interactively:
+FILM_EPOCHS=20000 FILM_NUM_WORKERS=4 .venv/bin/python train_model.py
+```
+
+Environment variables for tuning:
+- `FILM_EPOCHS` — default 20000, start with 1000 to verify convergence
+- `FILM_BATCH_SIZE` — default 64, can increase on 4090 (24 GB VRAM)
+- `FILM_NUM_WORKERS` — default 0, set to 4-8 on Linux to overlap data loading with GPU
+- `FILM_LR` — default 5e-4
+
+CUDA AMP is enabled automatically when `torch.cuda.is_available()`.
+
+Loss curve saved to `checkpoints/loss_curves.png` every 500 epochs (overwritten).
+Best model saved to `checkpoints/film_best.pth` whenever val MSE improves.
+
+#### 3. Evaluate
+
+```bash
+.venv/bin/python test_model.py
+```
+
+Compare MSE, MAE, RelL1, RelL2 for cp, cf_x, cf_z against upstream README.
+
+#### Important notes
+
+- `dataset.py` loads point data lazily from HDF5 (not into RAM). This is critical — the HDF5 is 15 GB. Setting `NUM_WORKERS > 0` on Linux is fine (h5py handles it).
+- `norm_stats.json` was pre-computed from train data on macOS and transferred. Do NOT delete it — recomputing scans the full HDF5.
+- Two VTK cases are missing from the HDF5s (VTK segfault on macOS): train/case_7709, test/case_319. This is negligible (0.02%).
+- If HDF5 is on network storage (`$SCRATCH`), consider copying to `$TMPDIR` for the job to avoid I/O bottleneck:
+  ```bash
+  cp data/surface_data.hdf5 $TMPDIR/
+  BLENDEDNET_DATA=$TMPDIR .venv/bin/python train_model.py
+  ```
 
 ## Files Relevant To This Work
 

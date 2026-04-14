@@ -98,28 +98,42 @@ class UnifiedDesignDataset(Dataset):
             flight_std[flight_std == 0] = 1.0
             shape_std[shape_std == 0]   = 1.0
 
-            # coord min/max + output mean/std from HDF5 (cp, cfx, cfz)
+            # coord min/max + output mean/std from HDF5 (streaming, no big concat)
             coord_min = np.array([ np.inf,  np.inf,  np.inf], dtype=np.float32)
             coord_max = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
-            out_accum = []
+            out_sum   = np.zeros(3, dtype=np.float64)
+            out_sumsq = np.zeros(3, dtype=np.float64)
+            out_count = 0
 
+            h5_keys = set(self.points_grp.keys())
+            n_scanned = 0
             for row in df.itertuples(index=False):
                 k = row.case_key
-                if k not in self.points_grp: continue
+                if k not in h5_keys: continue
                 P = self.points_grp[k][()]    # (N,3)
                 if P.size == 0: continue
                 coord_min = np.minimum(coord_min, P.min(axis=0))
                 coord_max = np.maximum(coord_max, P.max(axis=0))
 
-                cp  = self.cp_grp[k][()]
-                cfx = self.cfx_grp[k][()]
-                cfz = self.cfz_grp[k][()]
-                out_accum.append(np.stack([cp, cfx, cfz], axis=-1))
+                cp  = self.cp_grp[k][()].astype(np.float64)
+                cfx = self.cfx_grp[k][()].astype(np.float64)
+                cfz = self.cfz_grp[k][()].astype(np.float64)
+                valid = np.isfinite(cp) & np.isfinite(cfx) & np.isfinite(cfz)
+                n_valid = valid.sum()
+                if n_valid > 0:
+                    vals = np.stack([cp[valid], cfx[valid], cfz[valid]], axis=-1)
+                    out_sum   += vals.sum(axis=0)
+                    out_sumsq += (vals ** 2).sum(axis=0)
+                    out_count += n_valid
 
-            if out_accum:
-                outs = np.concatenate(out_accum, axis=0)
-                output_mean = outs.mean(axis=0).astype(np.float32)
-                output_std  = outs.std(axis=0).astype(np.float32)
+                n_scanned += 1
+                if n_scanned % 1000 == 0:
+                    print(f"  [norm_stats] scanned {n_scanned} cases ...")
+
+            print(f"  [norm_stats] done: {n_scanned} cases, {out_count} total points")
+            if out_count > 0:
+                output_mean = (out_sum / out_count).astype(np.float32)
+                output_std  = np.sqrt(out_sumsq / out_count - output_mean.astype(np.float64) ** 2).astype(np.float32)
                 output_std[output_std == 0] = 1.0
             else:
                 output_mean = np.zeros(3, dtype=np.float32)
@@ -138,12 +152,12 @@ class UnifiedDesignDataset(Dataset):
         self.coord_min   = norm_stats['coord_min'];   self.coord_max   = norm_stats['coord_max']
         self.output_mean = norm_stats['output_mean']; self.output_std  = norm_stats['output_std']
 
-        # ----------------- build designs grouped by 'mesh' -----------------
+        # ----------------- build designs (lazy: metadata only) -----------------
         groups = {}
         skipped = 0
         for row in df.itertuples(index=False):
             k = row.case_key
-            if k not in self.points_grp: 
+            if k not in self.points_grp:
                 skipped += 1
                 continue
 
@@ -152,31 +166,13 @@ class UnifiedDesignDataset(Dataset):
             shape  = np.array([getattr(row, c) for c in self.shape_cols],  dtype=np.float32)
             nf = (flight - self.flight_mean) / self.flight_std
             ns = (shape  - self.shape_mean)  / self.shape_std
-            cond = np.concatenate([nf, ns]).astype(np.float32)  # (13 + any extras)
-
-            # coords normalized to [-1,1], normals raw
-            P  = self.points_grp[k][()]          # (N,3)
-            N  = self.normals_grp[k][()] if k in self.normals_grp else np.zeros_like(P, dtype=np.float32)
-            if P.shape[0] == 0 or N.shape[0] != P.shape[0]: 
-                skipped += 1
-                continue
-            Pn = 2.0 * (P - self.coord_min) / (self.coord_max - self.coord_min + 1e-12) - 1.0
-            coords6 = np.concatenate([Pn, N], axis=-1).astype(np.float32)  # (N,6)
-
-            # outputs normalized: (cp, cfx, cfz)
-            cp  = (self.cp_grp[k][()]  - self.output_mean[0]) / self.output_std[0]
-            cfx = (self.cfx_grp[k][()] - self.output_mean[1]) / self.output_std[1]
-            cfz = (self.cfz_grp[k][()] - self.output_mean[2]) / self.output_std[2]
-            Y   = np.stack([cp, cfx, cfz], axis=-1).astype(np.float32)
+            cond = np.concatenate([nf, ns]).astype(np.float32)
 
             mesh_id = getattr(row, 'mesh')
             groups.setdefault(mesh_id, []).append(dict(
-                case_name=k,
+                case_key=k,
                 mesh=mesh_id,
                 flight_cond=cond,
-                points=coords6,
-                coeffs=Y,
-                # meta if you want it:
                 CD=float(getattr(row,'CD')), CL=float(getattr(row,'CL')), CMy=float(getattr(row,'CMy'))
             ))
 
@@ -189,11 +185,31 @@ class UnifiedDesignDataset(Dataset):
         self.coord_dim  = 6
         self.output_dim = 3
 
+    def _load_case(self, meta: dict) -> dict:
+        """Load point data from HDF5 on demand for a single case."""
+        k = meta['case_key']
+        P = self.points_grp[k][()]
+        N = self.normals_grp[k][()] if k in self.normals_grp else np.zeros_like(P, dtype=np.float32)
+        Pn = 2.0 * (P - self.coord_min) / (self.coord_max - self.coord_min + 1e-12) - 1.0
+        coords6 = np.concatenate([Pn, N], axis=-1).astype(np.float32)
+
+        cp  = (self.cp_grp[k][()]  - self.output_mean[0]) / self.output_std[0]
+        cfx = (self.cfx_grp[k][()] - self.output_mean[1]) / self.output_std[1]
+        cfz = (self.cfz_grp[k][()] - self.output_mean[2]) / self.output_std[2]
+        Y = np.stack([cp, cfx, cfz], axis=-1).astype(np.float32)
+
+        return dict(
+            case_name=k, mesh=meta['mesh'], flight_cond=meta['flight_cond'],
+            points=coords6, coeffs=Y,
+            CD=meta['CD'], CL=meta['CL'], CMy=meta['CMy']
+        )
+
     def __len__(self):
         return self.num_designs
 
     def __getitem__(self, idx):
-        return self.designs[idx]
+        design_meta = self.designs[idx]
+        return [self._load_case(m) for m in design_meta]
 
     def close(self):
         self.h5f.close()

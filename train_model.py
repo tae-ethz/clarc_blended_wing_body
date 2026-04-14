@@ -94,12 +94,19 @@ LOSS_PLOT = CKPT_DIR / "loss_curves.png"
 train_losses, val_losses = [], []
 best_val = float("inf")
 t0 = time.time()
+print(f"Starting training: {EPOCHS} epochs, batch_size={BATCH_SIZE}, device={device}")
+print(f"Train loader: {len(train_loader)} batches, Val loader: {len(val_loader)} batches")
+import sys; sys.stdout.flush()
+
 for epoch in range(1, EPOCHS + 1):
     model.train()
     running = 0.0
     count = 0
 
-    for coords, conds, targets in train_loader:
+    for batch_idx, (coords, conds, targets) in enumerate(train_loader):
+        if epoch == 1 and batch_idx == 0:
+            print(f"  First batch: coords={coords.shape}, conds={conds.shape}, targets={targets.shape}")
+            sys.stdout.flush()
         coords, conds, targets = coords.to(device), conds.to(device), targets.to(device)
 
         opt.zero_grad(set_to_none=True)
