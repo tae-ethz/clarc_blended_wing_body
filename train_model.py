@@ -1,46 +1,79 @@
-# train_with_frozen_stats.py
-import os, json, time, numpy as np, torch
+#!/usr/bin/env python3
+import os, json, time, numpy as np, torch, matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from pathlib import Path
 from torch.utils.data import DataLoader
 from dataset import UnifiedDesignDataset, design_collate_fn, split_designs
 from models.film_model_v1 import FiLMNet
 
 # ----------------------- Paths -----------------------
-CSV = "/home/nicksung/Desktop/nicksung/bwb_pp/data/case_with_geom_params.csv"
-H5  = "/home/nicksung/Desktop/nicksung/bwb_pp/data/surface_data.hdf5"
-NORM_JSON = "norm_stats.json"   # produced from train-only stats earlier
-CKPT_DIR  = Path("./checkpoints"); CKPT_DIR.mkdir(parents=True, exist_ok=True)
+REPO_ROOT = Path(__file__).resolve().parent
+_DATA = Path(os.environ.get("BLENDEDNET_DATA", REPO_ROOT / "data"))
+_CSV = Path(os.environ.get("BLENDEDNET_CSV", REPO_ROOT / "csv_files"))
+
+CSV = str(_CSV / "case_with_geom_params_train.csv")
+H5  = str(_DATA / "surface_data.hdf5")
+NORM_JSON = str(REPO_ROOT / "norm_stats.json")
+CKPT_DIR  = Path(os.environ.get("BLENDEDNET_CHECKPOINTS", REPO_ROOT / "checkpoints"))
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
 BEST_PATH  = CKPT_DIR / "film_best.pth"
 FINAL_PATH = CKPT_DIR / "film_final.pth"
 CFG_PATH   = CKPT_DIR / "train_config.json"
 
 # ----------------------- Hyperparams -----------------------
-EPOCHS = 20000
-BATCH_SIZE = 64
-LR = 5e-4
-TRAIN_RATIO = 0.9
+EPOCHS = int(os.getenv("FILM_EPOCHS", "20000"))
+BATCH_SIZE = int(os.getenv("FILM_BATCH_SIZE", "64"))
+LR = float(os.getenv("FILM_LR", "5e-4"))
+TRAIN_RATIO = float(os.getenv("FILM_TRAIN_RATIO", "0.9"))
+NUM_WORKERS = int(os.getenv("FILM_NUM_WORKERS", "0"))
 
 # ----------------------- Device & AMP -----------------------
-cuda_avail = torch.cuda.is_available()
-device = torch.device("cuda:0" if cuda_avail else "cpu")
-if cuda_avail:
-    print(f"✅ CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
+if torch.cuda.is_available():
+    device = torch.device("cuda:0")
+    device_name = torch.cuda.get_device_name(0)
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = torch.device("mps")
+    device_name = "Apple Metal (MPS)"
 else:
-    print("⚠️ CUDA not available. Using CPU.")
+    device = torch.device("cpu")
+    device_name = "CPU"
+print(f"Using device: {device_name}")
 
-use_amp = cuda_avail  # flip to False if you don't want AMP
+use_amp = device.type == "cuda"
 scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
 # ----------------------- Load norm stats -----------------------
-raw = json.load(open(NORM_JSON))
-NORM = {k: np.array(v, dtype=np.float32) for k, v in raw.items()}
+if os.path.isfile(NORM_JSON):
+    raw = json.load(open(NORM_JSON))
+    NORM = {k: np.array(v, dtype=np.float32) for k, v in raw.items()}
+else:
+    tmp_ds = UnifiedDesignDataset(csv_path=CSV, hdf5_path=H5, norm_stats=None, mode="train")
+    NORM = {k: np.array(v, dtype=np.float32) for k, v in tmp_ds.norm_stats.items()}
+    with open(NORM_JSON, "w") as f:
+        json.dump({k: v.tolist() for k, v in NORM.items()}, f, indent=2)
+    tmp_ds.close()
 
 # ----------------------- Dataset & Loaders -----------------------
 ds_full = UnifiedDesignDataset(csv_path=CSV, hdf5_path=H5, norm_stats=NORM, mode="train")
 train_ds, val_ds = split_designs(ds_full, train_ratio=TRAIN_RATIO)
 
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  collate_fn=design_collate_fn)
-val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, collate_fn=design_collate_fn)
+train_loader = DataLoader(
+    train_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    collate_fn=design_collate_fn,
+    num_workers=NUM_WORKERS,
+    pin_memory=device.type == "cuda",
+)
+val_loader = DataLoader(
+    val_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    collate_fn=design_collate_fn,
+    num_workers=NUM_WORKERS,
+    pin_memory=device.type == "cuda",
+)
 
 # ----------------------- Model -----------------------
 model = FiLMNet(cond_dim=13, coord_dim=6, output_dim=3,
@@ -57,6 +90,8 @@ cfg = dict(
 json.dump(cfg, open(CFG_PATH, "w"), indent=2)
 
 # ----------------------- Train/Val Loop -----------------------
+LOSS_PLOT = CKPT_DIR / "loss_curves.png"
+train_losses, val_losses = [], []
 best_val = float("inf")
 t0 = time.time()
 for epoch in range(1, EPOCHS + 1):
@@ -93,13 +128,32 @@ for epoch in range(1, EPOCHS + 1):
             v_count   += coords.size(0)
     val_mse = v_running / max(v_count, 1)
 
+    train_losses.append(train_mse)
+    val_losses.append(val_mse)
+
+    if epoch % 500 == 0:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.semilogy(train_losses, label="train", linewidth=0.8)
+        ax.semilogy(val_losses, label="val", linewidth=0.8)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("MSE")
+        ax.set_title(f"FiLM Training — epoch {epoch}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(LOSS_PLOT, dpi=150)
+        plt.close(fig)
+
     # Save best
+    saved = False
     if val_mse < best_val:
         best_val = val_mse
         torch.save(model.state_dict(), BEST_PATH)
-        print(f"[epoch {epoch:03d}] train_mse={train_mse:.4e} | val_mse={val_mse:.4e}  <-- saved BEST")
-    else:
-        print(f"[epoch {epoch:03d}] train_mse={train_mse:.4e} | val_mse={val_mse:.4e}")
+        saved = True
+
+    if saved or epoch % 10 == 0 or epoch == 1:
+        tag = "  <-- BEST" if saved else ""
+        print(f"[epoch {epoch:05d}] train={train_mse:.4e} | val={val_mse:.4e}{tag}")
 
 # ----------------------- Save final -----------------------
 torch.save(model.state_dict(), FINAL_PATH)
@@ -107,3 +161,4 @@ dt = time.time() - t0
 print(f"\nDone in {dt/60:.1f} min")
 print(f"Best weights:  {BEST_PATH}")
 print(f"Final weights: {FINAL_PATH}")
+ds_full.close()

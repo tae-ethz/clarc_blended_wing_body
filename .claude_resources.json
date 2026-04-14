@@ -1,0 +1,14 @@
+{
+  "os": {
+    "system": "Darwin",
+    "release": "25.4.0",
+    "machine": "arm64"
+  },
+  "python": "3.9.6",
+  "cpu": {},
+  "memory": {},
+  "disk": {},
+  "gpu": {
+    "available_backends": []
+  }
+}

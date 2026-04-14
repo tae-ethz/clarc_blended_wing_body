@@ -28,18 +28,39 @@ class UnifiedDesignDataset(Dataset):
         super().__init__()
         self.mode = mode
 
-        # Columns (fixed to your spec)
-        self.flight_base = ['Re_L','M_inf','alpha_deg']
+        # Normalize column names from the raw dataset and older CSV exports.
+        df = pd.read_csv(csv_path)
+        if 'Re_L' not in df.columns and 'Re' in df.columns:
+            df = df.rename(columns={'Re': 'Re_L'})
+        if 'CMy' not in df.columns and 'Cmy' in df.columns:
+            df = df.rename(columns={'Cmy': 'CMy'})
+        if 'mesh' not in df.columns and 'geom_name' in df.columns:
+            df['mesh'] = df['geom_name']
+
+        # Columns (fixed to the active dataset schema)
+        self.flight_base = ['Re_L', 'M_inf', 'alpha_deg']
         extra = []
         if include_alt_kft:  extra.append('alt_kft')
         if include_beta_deg: extra.append('beta_deg')
         self.flight_cols = self.flight_base + extra        # default: 3
-        self.shape_cols  = ['B1','B2','B3','C1','C2','C3','C4','S1','S3','X3']  # 10
-        self.meta_cols   = ['case_name','mesh','CD','CL','CMy']                 # kept but unused in cond
 
-        expected = set(['case_name','mesh','alt_kft','Re_L','M_inf','alpha_deg','beta_deg',
-                        'CD','CL','CMy','B1','B2','B3','C1','C2','C3','C4','S1','S3','X3'])
-        df = pd.read_csv(csv_path)
+        candidate_shape_cols = [
+            ['B1', 'B2', 'B3', 'C1', 'C2', 'C3', 'C4', 'S1', 'S2', 'S3'],
+            ['B1', 'B2', 'B3', 'C1', 'C2', 'C3', 'C4', 'S1', 'S3', 'X3'],
+        ]
+        self.shape_cols = next((cols for cols in candidate_shape_cols if set(cols).issubset(df.columns)), None)
+        if self.shape_cols is None:
+            raise ValueError(
+                "CSV does not match a supported shape-parameter schema. "
+                "Expected either [..., S1, S2, S3] or [..., S1, S3, X3]."
+            )
+
+        self.meta_cols = ['case_name', 'mesh', 'CD', 'CL', 'CMy']              # kept but unused in cond
+
+        expected = set(
+            ['case_name', 'mesh', 'alt_kft', 'Re_L', 'M_inf', 'alpha_deg', 'beta_deg', 'CD', 'CL', 'CMy']
+            + self.shape_cols
+        )
         missing = sorted(list(expected - set(df.columns)))
         if missing:
             raise ValueError(f"CSV missing columns: {missing}")

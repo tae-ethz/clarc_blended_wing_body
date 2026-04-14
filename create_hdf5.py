@@ -17,9 +17,10 @@ If cp/cf arrays are missing or wrong-length, fills with NaNs (to preserve the ca
 Per-case writing keeps memory usage flat.
 
 Usage:
-  python build_surface_hdf5.py
+  python create_hdf5.py --data-dir data/train/vtk --out-h5 data/surface_data.hdf5
 """
 
+import argparse
 import sys
 import numpy as np
 import h5py
@@ -32,27 +33,10 @@ except Exception as e:
     print("Error: pyvista is required. Install with: pip install pyvista vtk", file=sys.stderr)
     raise
 
-# ---------------------------- CONFIG -----------------------------------------
-# DATA_DIR = Path("/home/nicksung/Desktop/nicksung/bwb_full_v2/data/vtk")
-# OUT_H5   = Path("/home/nicksung/Desktop/nicksung/bwb_full_v2/data/surface_data.hdf5")
-
-CASE_START = 0
-CASE_END   = 9999  # inclusive
-
-# Provided missing cases (string suffixes, 4 digits)
-MISSING_CASES = {
-    }
-
 # HDF5 compression/chunking settings
 H5_COMP = {"compression": "gzip", "compression_opts": 4, "shuffle": True}
 
 # ------------------------- HELPERS -------------------------------------------
-def case_id(i: int) -> str:
-    return f"case_{i:04d}"
-
-def vtk_path_for(i: int) -> Path:
-    return DATA_DIR / f"{case_id(i)}.vtk"
-
 def _lower_keys(dataset) -> dict:
     """Map lower-cased point_data names -> original names for case-insensitive lookup."""
     mapping = {}
@@ -140,32 +124,49 @@ def write_case(h5, key: str, points: np.ndarray, normals: np.ndarray,
     h5["cf_z"].create_dataset(key, data=cf_z, chunks=True, **H5_COMP)
 
 # --------------------------- MAIN --------------------------------------------
-def main():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    OUT_H5.parent.mkdir(parents=True, exist_ok=True)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Convert BlendedNet VTK surface data to HDF5.")
+    parser.add_argument("--data-dir", type=Path, required=True, help="Directory containing case_*.vtk files.")
+    parser.add_argument("--out-h5", type=Path, required=True, help="Output HDF5 path.")
+    parser.add_argument("--offset", type=int, default=0, help="Start index within the sorted VTK file list.")
+    parser.add_argument("--limit", type=int, default=0, help="Number of VTK files to process (0 = all remaining).")
+    parser.add_argument("--append", action="store_true", help="Append to an existing HDF5 instead of recreating it.")
+    return parser.parse_args()
 
-    not_found = []   # files genuinely missing on disk
+
+def main():
+    args = parse_args()
+    data_dir = args.data_dir
+    out_h5 = args.out_h5
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"VTK directory not found: {data_dir}")
+
+    case_files = sorted(data_dir.glob("case_*.vtk"))
+    if not case_files:
+        raise FileNotFoundError(f"No case_*.vtk files found in {data_dir}")
+    if args.offset:
+        case_files = case_files[args.offset:]
+    if args.limit:
+        case_files = case_files[:args.limit]
+    if not case_files:
+        raise ValueError("No VTK files selected after applying offset/limit")
+
+    out_h5.parent.mkdir(parents=True, exist_ok=True)
+
     failed = []      # cases that raised exceptions during processing
     written = 0
 
-    with h5py.File(OUT_H5, "w") as h5:
+    with h5py.File(out_h5, "a" if args.append else "w") as h5:
         ensure_groups(h5)
-        h5.attrs["source_dir"] = str(DATA_DIR)
+        h5.attrs["source_dir"] = str(data_dir)
         h5.attrs["builder"] = "vtk->hdf5 surface_data"
         h5.attrs["notes"] = "points/normals/cp/cf_x/cf_y/cf_z per case; float32; gzip compressed"
 
-        for i in range(CASE_START, CASE_END + 1):
-            cid = case_id(i)
-            suffix = f"{i:04d}"
-            if suffix in MISSING_CASES:
-                # listed-missing; track only in meta (not 'not_found')
+        for vtk_path in case_files:
+            cid = vtk_path.stem.lower()
+            if cid in h5["points"]:
                 continue
-
-            vtk_path = vtk_path_for(i)
-            if not vtk_path.exists():
-                not_found.append(cid)
-                continue
-
             try:
                 mesh = pv.read(vtk_path)
 
@@ -288,18 +289,21 @@ def main():
         # Save meta lists
         meta = h5["meta"]
         dt = h5py.string_dtype(encoding="utf-8")
-        meta.create_dataset("listed_missing_cases", data=np.array(sorted(list(MISSING_CASES)), dtype=dt))
-        meta.create_dataset("not_found_files", data=np.array(not_found, dtype=dt))
+        for name in ["listed_missing_cases", "not_found_files", "failed_cases"]:
+            if name in meta:
+                del meta[name]
+        meta.create_dataset("listed_missing_cases", data=np.array([], dtype=dt))
+        meta.create_dataset("not_found_files", data=np.array([], dtype=dt))
         meta.create_dataset("failed_cases", data=np.array(failed, dtype=dt))
 
-        h5.attrs["written_cases"] = written
-        h5.attrs["total_expected"] = CASE_END - CASE_START + 1 - len(MISSING_CASES)
+        h5.attrs["written_cases"] = len(h5["points"])
+        h5.attrs["total_expected"] = len(h5["points"]) + len(failed)
 
     print("\n==== SUMMARY ====")
-    print(f"HDF5 written to: {OUT_H5}")
+    print(f"HDF5 written to: {out_h5}")
     print(f"Cases written:   {written}")
-    print(f"Listed missing:  {len(MISSING_CASES)}")
-    print(f"Not found:       {len(not_found)}")
+    print("Listed missing:  0")
+    print("Not found:       0")
     print(f"Failed:          {len(failed)}")
     if failed:
         print("First few failures:")
