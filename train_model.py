@@ -116,16 +116,28 @@ if USE_WANDB:
         config=cfg,
     )
 
+# ----------------------- Resume -----------------------
+RESUME_PATH = Path(os.getenv("FILM_RESUME", ""))
+start_epoch = 1
+best_val = float("inf")
+if RESUME_PATH.is_file():
+    ckpt = torch.load(RESUME_PATH, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    opt.load_state_dict(ckpt["optimizer"])
+    scaler.load_state_dict(ckpt["scaler"])
+    start_epoch = ckpt["epoch"] + 1
+    best_val = ckpt.get("best_val", float("inf"))
+    print(f"Resumed from {RESUME_PATH} (epoch {ckpt['epoch']}, best_val={best_val:.4e})")
+
 # ----------------------- Train/Val Loop -----------------------
 LOSS_PLOT = CKPT_DIR / "loss_curves.png"
 train_losses, val_losses = [], []
-best_val = float("inf")
 t0 = time.time()
-print(f"Starting training: {EPOCHS} epochs, batch_size={BATCH_SIZE}, device={device}")
+print(f"Starting training: epochs {start_epoch}-{EPOCHS}, batch_size={BATCH_SIZE}, device={device}")
 print(f"Train loader: {len(train_loader)} batches, Val loader: {len(val_loader)} batches")
 import sys; sys.stdout.flush()
 
-for epoch in range(1, EPOCHS + 1):
+for epoch in range(start_epoch, EPOCHS + 1):
     model.train()
     running = 0.0
     count = 0
@@ -188,7 +200,10 @@ for epoch in range(1, EPOCHS + 1):
     saved = False
     if val_mse < best_val:
         best_val = val_mse
-        torch.save(model.state_dict(), BEST_PATH)
+        torch.save(dict(
+            epoch=epoch, model=model.state_dict(), optimizer=opt.state_dict(),
+            scaler=scaler.state_dict(), best_val=best_val,
+        ), BEST_PATH)
         saved = True
 
     if saved or epoch % 10 == 0 or epoch == 1:
@@ -196,7 +211,10 @@ for epoch in range(1, EPOCHS + 1):
         print(f"[epoch {epoch:05d}] train={train_mse:.4e} | val={val_mse:.4e}{tag}")
 
 # ----------------------- Save final -----------------------
-torch.save(model.state_dict(), FINAL_PATH)
+torch.save(dict(
+    epoch=EPOCHS, model=model.state_dict(), optimizer=opt.state_dict(),
+    scaler=scaler.state_dict(), best_val=best_val,
+), FINAL_PATH)
 dt = time.time() - t0
 print(f"\nDone in {dt/60:.1f} min")
 print(f"Best weights:  {BEST_PATH}")
