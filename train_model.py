@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-import os, json, time, numpy as np, torch, matplotlib
+import argparse, os, json, time, numpy as np, torch, matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 from torch.utils.data import DataLoader
 from dataset import UnifiedDesignDataset, design_collate_fn, split_designs
 from models.film_model_v1 import FiLMNet
+
+# ----------------------- CLI args (wandb) -----------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--no-wandb", action="store_true", help="disable wandb logging")
+parser.add_argument("--wandb-entity", default="glue2")
+parser.add_argument("--wandb-project", default="blendednet-repro")
+parser.add_argument("--wandb-dir", default="/cluster/scratch/taebersold/clarc_bwb/wandb/")
+parser.add_argument("--wandb-run-name", default=None, help="optional run name")
+args = parser.parse_args()
+
+USE_WANDB = not args.no_wandb
+if USE_WANDB:
+    import wandb
 
 # ----------------------- Paths -----------------------
 REPO_ROOT = Path(__file__).resolve().parent
@@ -89,6 +102,17 @@ cfg = dict(
 )
 json.dump(cfg, open(CFG_PATH, "w"), indent=2)
 
+# ----------------------- Wandb -----------------------
+if USE_WANDB:
+    os.makedirs(args.wandb_dir, exist_ok=True)
+    wandb.init(
+        entity=args.wandb_entity,
+        project=args.wandb_project,
+        name=args.wandb_run_name,
+        dir=args.wandb_dir,
+        config=cfg,
+    )
+
 # ----------------------- Train/Val Loop -----------------------
 LOSS_PLOT = CKPT_DIR / "loss_curves.png"
 train_losses, val_losses = [], []
@@ -138,6 +162,9 @@ for epoch in range(1, EPOCHS + 1):
     train_losses.append(train_mse)
     val_losses.append(val_mse)
 
+    if USE_WANDB:
+        wandb.log({"train_mse": train_mse, "val_mse": val_mse, "epoch": epoch})
+
     if epoch % 500 == 0:
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.semilogy(train_losses, label="train", linewidth=0.8)
@@ -169,3 +196,5 @@ print(f"\nDone in {dt/60:.1f} min")
 print(f"Best weights:  {BEST_PATH}")
 print(f"Final weights: {FINAL_PATH}")
 ds_full.close()
+if USE_WANDB:
+    wandb.finish()
