@@ -10,7 +10,7 @@ from models.film_model_v1 import FiLMNet
 # ----------------------- CLI args (wandb) -----------------------
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-wandb", action="store_true", help="disable wandb logging")
-parser.add_argument("--wandb-entity", default="glue2")
+parser.add_argument("--wandb-entity", default="taebersold-eth-zurich")
 parser.add_argument("--wandb-project", default="blendednet-repro")
 parser.add_argument("--wandb-dir", default="/cluster/scratch/taebersold/clarc_bwb/wandb/")
 parser.add_argument("--wandb-run-name", default=None, help="optional run name")
