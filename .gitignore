@@ -1,0 +1,7 @@
+/data/
+/checkpoints/
+/runs/
+/norm_stats.json
+__pycache__/
+*.pyc
+.DS_Store

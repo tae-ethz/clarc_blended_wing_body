@@ -1,3 +1,11 @@
+# Original Repository README
+
+This file preserves the original upstream `README.md` from Nicolas Sung's repository.
+
+It is kept here for reference only and does not represent the current direction of this fork.
+
+---
+
 # BlendedNet: FiLM-Based Aerodynamic Field Prediction
 
 This repository contains the codebase used in the ASME IDETC 2025 paper:
@@ -166,4 +174,3 @@ For questions, please contact:
 - **Nicholas Sung**\
   Department of Mechanical Engineering, MIT\
   [nicksung@mit.edu](mailto\:nicksung@mit.edu)
-
