@@ -1,6 +1,7 @@
 /data/
 /checkpoints/*
 !/checkpoints/film_ep2478_val0.056.pth
+!/checkpoints/film_ep20000_val0.049.pth
 /runs/
 /norm_stats.json
 __pycache__/
