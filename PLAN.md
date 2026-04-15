@@ -1,5 +1,7 @@
 # Surrogate Modeling Plan
 
+> **Part of [B101 BWB MDO Benchmark](/Users/taebersold/Code/GLUE2-Applications/b101_bwb/overview.md)**. Update that overview when checkpoints, architecture, or training results change.
+
 ## Goal
 
 Build a differentiable surrogate benchmark for blended-wing-body aerodynamics that supports:

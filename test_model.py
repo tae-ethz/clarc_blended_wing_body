@@ -13,7 +13,7 @@ Requires:
   - models/film_model_v1.py providing FiLMNet
 """
 
-import os, json, time, numpy as np, torch
+import argparse, os, json, time, numpy as np, torch
 from pathlib import Path
 
 # --- Your modules ---
@@ -21,8 +21,7 @@ from dataset import UnifiedDesignDataset
 from models.film_model_v1 import FiLMNet
 
 # ========================== PATHS ==========================
-# Run with notebook cwd = repo root, or set BLENDEDNET_DATA / BLENDEDNET_CSV / BLENDEDNET_MODEL.
-REPO_ROOT = Path.cwd().resolve()
+REPO_ROOT = Path(__file__).parent.resolve()
 _DATA = Path(os.environ.get("BLENDEDNET_DATA", REPO_ROOT / "data"))
 _CSV = Path(os.environ.get("BLENDEDNET_CSV", REPO_ROOT / "csv_files"))
 
@@ -32,9 +31,15 @@ TEST_CSV = str(_CSV / "case_with_geom_params_test.csv")
 TEST_H5 = str(_DATA / "surface_data_test.hdf5")
 
 NORM_JSON = str(REPO_ROOT / "norm_stats.json")
-MODEL_PATH = str(Path(os.environ.get("BLENDEDNET_MODEL", REPO_ROOT / "checkpoints" / "film_best.pth")))
-DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE      = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 CHUNK_SIZE  = int(os.getenv("EVAL_CHUNK", "200000"))  # points per forward pass
+
+# ── Paper baseline (BlendedNet ASME IDETC 2025, GT-conditioned) ────────────────
+PAPER_BASELINE = {
+    "cp":   dict(MSE=7.86e-3, MAE=3.72e-2, RelL1=13.52, RelL2=3.11),
+    "cf_x": dict(MSE=2.80e-5, MAE=1.35e-3, RelL1=22.09, RelL2=7.74),
+    "cf_z": dict(MSE=1.51e-5, MAE=7.96e-4, RelL1=30.01, RelL2=18.79),
+}
 
 # ===================== HELPERS ============================
 def load_norm_stats_or_compute(train_csv, train_h5, norm_json_path):
@@ -57,10 +62,12 @@ def load_norm_stats_or_compute(train_csv, train_h5, norm_json_path):
     return norm_stats
 
 def load_model(model_path, device=DEVICE):
-    # Match your training config exactly
     model = FiLMNet(cond_dim=13, coord_dim=6, output_dim=3,
                     hidden_dim=256, num_layers=4, extra_layers=3)
-    sd = torch.load(model_path, map_location=device)
+    sd = torch.load(model_path, map_location=device, weights_only=False)
+    # Handle full checkpoint dicts (with optimizer / epoch)
+    if isinstance(sd, dict) and "model" in sd:
+        sd = sd["model"]
     model.load_state_dict(sd)
     model.to(device).eval()
     return model
@@ -127,13 +134,20 @@ def compute_test_metrics_full(model, test_ds, device=DEVICE, chunk_size=CHUNK_SI
 
 # ====================== MAIN =============================
 if __name__ == "__main__":
-    print(f"Device: {DEVICE} | CHUNK_SIZE={CHUNK_SIZE}")
+    ap = argparse.ArgumentParser(description="Evaluate FiLMNet on the test set")
+    ap.add_argument("--checkpoint", type=str,
+                    default=str(REPO_ROOT / "checkpoints" / "film_best.pth"),
+                    help="Path to model checkpoint (default: checkpoints/film_best.pth)")
+    args = ap.parse_args()
+
+    MODEL_PATH = args.checkpoint
+    print(f"Device    : {DEVICE} | CHUNK_SIZE={CHUNK_SIZE}")
+    print(f"Checkpoint: {MODEL_PATH}")
 
     # 1) Load (or compute) normalization stats
     NORM = load_norm_stats_or_compute(TRAIN_CSV, TRAIN_H5, NORM_JSON)
 
-    # 2) Build TEST dataset with the SAME stats (no randomness here)
-    #    NOTE: mode='test' formats case keys as case_000, case_001, ...
+    # 2) Build TEST dataset
     test_ds = UnifiedDesignDataset(csv_path=TEST_CSV,
                                    hdf5_path=TEST_H5,
                                    norm_stats=NORM,
@@ -146,7 +160,46 @@ if __name__ == "__main__":
     # 4) Full, all-point evaluation
     mse, mae, rel_l1, rel_l2, npts, dt = compute_test_metrics_full(model, test_ds, device=DEVICE)
 
-    # 5) Pretty print
-    print(f"\nEvaluated {npts:,} points across all cases in {dt/60:.1f} min\n=== TRUE shape metrics (test, ALL points) ===")
-    for k in ["cp", "cf_x", "cf_z"]:
-        print(f"{k:4s} | MSE={mse[k]:.6e}  MAE={mae[k]:.6e}  RelL1={rel_l1[k]:.6e}  RelL2={rel_l2[k]:.6e}")
+    # 5) Comparison table vs paper baseline
+    ckpt_name = Path(MODEL_PATH).stem
+    keys = ["cp", "cf_x", "cf_z"]
+
+    print(f"\nEvaluated {npts:,} points across all test cases in {dt/60:.1f} min\n")
+    print(f"{'':30s} {'Cp':>20s}  {'Cf_x':>20s}  {'Cf_z':>20s}")
+    print("-" * 94)
+
+    def _row(label, vals_dict, fmt):
+        parts = [f"{vals_dict[k]:{fmt}}" for k in keys]
+        print(f"  {label:<28s} {'  '.join(f'{p:>20s}' for p in parts)}")
+
+    print(f"  {'Metric':<28s} {'Cp':>20s}  {'Cf_x':>20s}  {'Cf_z':>20s}")
+    print("  " + "-" * 90)
+    for metric, our_vals, paper_key in [
+        ("MSE",   mse,    "MSE"),
+        ("MAE",   mae,    "MAE"),
+        ("Rel L1 (%)", {k: rel_l1[k]*100 for k in keys}, "RelL1"),
+        ("Rel L2 (%)", {k: rel_l2[k]*100 for k in keys}, "RelL2"),
+    ]:
+        # Our model row
+        our_strs = {k: f"{our_vals[k]:.4e}" if "%" not in metric else f"{our_vals[k]:.2f}%" for k in keys}
+        _row(f"Ours ({ckpt_name}): {metric}", our_strs, "s")
+        # Paper baseline row
+        paper_strs = {k: (f"{PAPER_BASELINE[k][paper_key]:.4e}" if "%" not in metric
+                          else f"{PAPER_BASELINE[k][paper_key]:.2f}%") for k in keys}
+        _row(f"BlendedNet (paper): {metric}", paper_strs, "s")
+        print()
+
+    # Compact delta summary
+    print("\n  Δ = Ours − Paper  (negative = better than paper)")
+    print("  " + "-" * 54)
+    print(f"  {'':28s} {'Cp':>8s}  {'Cf_x':>8s}  {'Cf_z':>8s}")
+    for metric, our_vals, paper_key, pct in [
+        ("MSE",    mse,    "MSE",   False),
+        ("MAE",    mae,    "MAE",   False),
+        ("RelL1%", {k: rel_l1[k]*100 for k in keys}, "RelL1", True),
+        ("RelL2%", {k: rel_l2[k]*100 for k in keys}, "RelL2", True),
+    ]:
+        deltas = {k: our_vals[k] - PAPER_BASELINE[k][paper_key] for k in keys}
+        fmt = ".2f" if pct else ".2e"
+        parts = "  ".join(f"{deltas[k]:>+8{fmt}}" for k in keys)
+        print(f"  {metric:<28s} {parts}")
